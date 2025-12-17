@@ -1,0 +1,2 @@
+Si no tienes Python instalado, descárgalo desde python.org.
+pip install pyautogui flask

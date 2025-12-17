@@ -1,0 +1,101 @@
+import socket
+import pyautogui
+import time
+
+# --- CONFIGURACIÓN DE RED ---
+UDP_IP = "0.0.0.0"
+UDP_PORT = 50000
+
+# --- PARÁMETROS DE CONTROL ---
+SENSITIVITY = 12.0      
+SMOOTH_FACTOR = 0.5     
+DEADZONE = 0.05         
+SHAKE_LIMIT = 35.0      # Umbral para minimizar
+SCROLL_LIMIT = 4.0      
+GYRO_CLICK_LIMIT = 15.0 
+
+# Estado global
+prev_dx, prev_dy = 0, 0
+last_action_time = 0
+
+# Failsafe evita que el script se bloquee si mueves el mouse a una esquina
+pyautogui.FAILSAFE = True 
+
+def start_server():
+    global prev_dx, prev_dy, last_action_time
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((UDP_IP, UDP_PORT))
+    sock.setblocking(False) # Sincronización en tiempo real
+    
+    print(f"Servidor Windows 10 Activo en puerto {UDP_PORT}...")
+    print("Usa 'Linear Acceleration' en HyperIMU (Sampling: 100ms)")
+
+    try:
+        while True:
+            last_data = None
+            # Vaciado de búfer para eliminar el delay
+            while True:
+                try:
+                    data, _ = sock.recvfrom(1024)
+                    last_data = data
+                except BlockingIOError:
+                    break
+            
+            if not last_data:
+                time.sleep(0.01)
+                continue
+
+            try:
+                line = last_data.decode('utf-8').strip()
+                parts = line.split(',')
+                
+                if len(parts) >= 4:
+                    ax, ay, az = float(parts[1]), float(parts[2]), float(parts[3])
+                    now = time.time()
+
+                    # 1. GESTO: MINIMIZAR
+                    accel_impact = (ax**2 + ay**2 + az**2)**0.5
+                    if accel_impact > SHAKE_LIMIT and now - last_action_time > 1.5:
+                        pyautogui.hotkey('win', 'd') 
+                        print(f"[EVENTO WIN] Escritorio mostrado (Impacto: {accel_impact:.2f})")
+                        last_action_time = now
+                        continue
+
+                    # 2. GESTO: CLIC
+                    if abs(ax) > GYRO_CLICK_LIMIT and now - last_action_time > 0.6:
+                        pyautogui.click()
+                        print("[EVENTO WIN] Clic ejecutado")
+                        last_action_time = now
+                        continue
+
+                    # 3. GESTO: SCROLL
+                    if abs(ay) > SCROLL_LIMIT and now - last_action_time > 0.2:
+                        direction = -1 if ay > 0 else 1
+                        pyautogui.scroll(direction * 100) # Windows usa valores mayores para scroll
+                        print(f"[EVENTO WIN] Scroll {'Abajo' if direction < 0 else 'Arriba'}")
+                        last_action_time = now
+                        continue
+
+                    # 4. MOVIMIENTO DEL MOUSE
+                    if abs(ax) > DEADZONE or abs(ay) > DEADZONE:
+                        target_dx = -ay * SENSITIVITY
+                        target_dy = -ax * SENSITIVITY
+                        
+                        actual_dx = (prev_dx * (1 - SMOOTH_FACTOR)) + (target_dx * SMOOTH_FACTOR)
+                        actual_dy = (prev_dy * (1 - SMOOTH_FACTOR)) + (target_dy * SMOOTH_FACTOR)
+
+                        pyautogui.moveRel(int(actual_dx), int(actual_dy))
+                        prev_dx, prev_dy = actual_dx, actual_dy
+                    else:
+                        prev_dx, prev_dy = 0, 0
+
+            except (ValueError, IndexError):
+                continue
+
+    except KeyboardInterrupt:
+        print("\n[INFO] Servidor detenido.")
+    finally:
+        sock.close()
+
+if __name__ == "__main__":
+    start_server()
