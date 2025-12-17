@@ -1,59 +1,70 @@
-from flask import Flask, request
+import socket
 import pyautogui
 import time
 
-app = Flask(__name__)
+# --- CONFIGURACIÓN DE RED ---
+UDP_IP = "0.0.0.0"
+UDP_PORT = 50000
 
-# --- PARÁMETROS DE ARQUITECTURA ---
-SENSITIVITY = 45.0
+# --- PARÁMETROS DE CONTROL ---
+SENSITIVITY = 0.5   # Ajusta según HyperIMU
 SMOOTH_FACTOR = 0.2
-SCROLL_THRESHOLD = 6.5   # Inclinación para scroll
-SHAKE_THRESHOLD = 25.0    # Fuerza para detectar el agitado (minimize)
+SHAKE_THRESHOLD = 25.0 
+last_action_time = 0
 
-# Estado global
-curr_x, curr_y = 0, 0
-last_shake_time = 0
+# Configuración inicial de PyAutoGUI
+pyautogui.FAILSAFE = False
 
-@app.route('/data', methods=['POST'])
-def handle_sensors():
-    global curr_x, curr_y, last_shake_time
-    data = request.get_json()
+def start_server():
+    global last_action_time
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((UDP_IP, UDP_PORT))
     
-    if data and 'payload' in data:
-        for entry in data['payload']:
-            if entry.get('name') == 'accelerometer':
-                v = entry.get('values', {})
-                ax, ay, az = v.get('x', 0), v.get('y', 0), v.get('z', 0)
+    print(f"Servidor UDP listo. HyperIMU debe apuntar a {UDP_PORT}")
 
-                # 1. FUNCIÓN: AGITAR PARA MINIMIZAR (Win + D)
-                # Si la aceleración total es muy alta, detectamos un agitado
-                accel_total = abs(ax) + abs(ay) + abs(az)
-                if accel_total > SHAKE_THRESHOLD:
+    try:
+        while True:
+            data, addr = sock.recvfrom(1024)
+            line = data.decode('utf-8').strip()
+            
+            # HyperIMU suele enviar: sensor_id, x, y, z
+            # Nota: El formato exacto puede variar según la versión. 
+            # Si el mouse no se mueve, revisaremos el print(parts)
+            parts = line.split(',')
+            
+            if len(parts) >= 4:
+                try:
+                    # Normalmente el acelerómetro es el ID 1 o 3 en HyperIMU
+                    ax = float(parts[1])
+                    ay = float(parts[2])
+                    az = float(parts[3])
+
                     now = time.time()
-                    if now - last_shake_time > 2: # Evita ejecuciones múltiples (cooldown de 2s)
-                        pyautogui.hotkey('winleft', 'd') 
-                        print("[EVENTO] ¡Agitado detectado! Ventanas minimizadas.")
-                        last_shake_time = now
-                    return "SHAKE", 200
 
-                # 2. FUNCIÓN: SCROLL POR INCLINACIÓN
-                if ay > SCROLL_THRESHOLD:
-                    pyautogui.scroll(-3)
-                    return "SCROLL", 200
-                elif ay < -SCROLL_THRESHOLD:
-                    pyautogui.scroll(3)
-                    return "SCROLL", 200
+                    # 1. FUNCIÓN MINIMIZAR (Atajo para Ubuntu Mate)
+                    accel_total = abs(ax) + abs(ay) + abs(az)
+                    if accel_total > SHAKE_THRESHOLD:
+                        if now - last_action_time > 2:
+                            # Atajo correcto para Linux / Ubuntu Mate
+                            pyautogui.hotkey('ctrl', 'alt', 'd')
+                            print("[EVENTO] Escritorio mostrado (Minimize All)")
+                            last_action_time = now
+                        continue
 
-                # 3. MOVIMIENTO NORMAL DEL MOUSE
-                target_dx = -ax * SENSITIVITY
-                target_dy = -ay * SENSITIVITY
-                curr_x = (curr_x * (1 - SMOOTH_FACTOR)) + (target_dx * SMOOTH_FACTOR)
-                curr_y = (curr_y * (1 - SMOOTH_FACTOR)) + (target_dy * SMOOTH_FACTOR)
-                
-                pyautogui.moveRel(int(curr_x), int(curr_y), duration=0.01)
+                    # 2. MOVIMIENTO DEL MOUSE
+                    # Invertimos ejes si es necesario según la orientación
+                    dx = int(-ay * SENSITIVITY * 10)
+                    dy = int(-ax * SENSITIVITY * 10)
+                    
+                    pyautogui.moveRel(dx, dy, duration=0.01)
 
-    return "OK", 200
+                except ValueError:
+                    continue
 
-if __name__ == '__main__':
-    pyautogui.FAILSAFE = False
-    app.run(host='0.0.0.0', port=50000, threaded=False)
+    except KeyboardInterrupt:
+        print("\nServidor detenido.")
+    finally:
+        sock.close()
+
+if __name__ == "__main__":
+    start_server()
